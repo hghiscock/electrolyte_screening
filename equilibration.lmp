@@ -1,0 +1,187 @@
+# Reference: M. Orsi, Comparative assessment of the ELBA coarse-grained 
+# model for water, Molecular Physics (2014), 112, 1566-1576
+# Modified by kdwelle@mit.edu for image charge formalism The Journal of Physical Chemistry C 2019, 123, 24095–24103
+
+#############
+# Variables #
+#############
+
+variable dimx equal 8        #number of waters in each dimension
+variable dwater equal 3.1    #length of water box
+variable density equal 0.002 #ion density
+variable Nrun equal 100000   #length of equilibration sim
+variable Ndump equal 1000    #how often to write output
+variable Text equal 298.0    #temp in K
+variable Pext equal 1.0      #pressure in atm
+
+variable lengthx equal ${dimx}*${dwater} #total length of box
+variable nIons equal round(${lengthx}*${lengthx}*${lengthx}*${density}) #number of ions
+
+################
+# System Setup #
+################
+
+units real
+atom_style full
+read_data data.singleTIP3P-Ew	#read single water parameters
+include forcefield.TIP3P-Ew	#read water force field
+
+#############
+# Add atoms #
+#############
+
+replicate ${dimx} ${dimx} ${dimx}				#duplicate water
+region activeR block 0 ${lengthx} 0 ${lengthx} 0 ${lengthx}	
+create_atoms 4 random ${nIons} RSEED1 activeR			#add positive ions
+create_atoms 5 random ${nIons} RSEED2 activeR			#add negative ions
+
+#Ion interaction parameters for pair_style lj/cut/coul/long
+mass 4 39.34 #Na
+set type 4 charge 1
+pair_coeff * 4 0.000 0.000
+pair_coeff 2 4 0.09444 2.814
+pair_coeff 4 4 0.08744 2.439
+mass 5 60.66 #Cl
+set type 5 charge -1
+pair_coeff * 5 0.000 0.000
+pair_coeff 2 5 0.06025 3.832
+pair_coeff 4 5 0.05579 3.458
+pair_coeff 5 5 0.03559 4.478
+mass 3 10.0 #images
+pair_coeff * 3 0.000 0.000
+pair_coeff 3 * 0.000 0.000
+
+neighbor 2.0 bin
+neigh_modify every 1 delay 0 check yes
+
+timestep 1.0
+
+##############
+#  Add Walls #
+##############
+
+variable dx equal 1.5 			#buffer for walls
+variable xlo equal xlo			#the variable is evaluated each time it is called
+variable xhi equal xhi			#meaning its value changes if the box dimensions change
+variable ylo equal ylo
+variable yhi equal yhi
+variable zlo equal zlo
+variable zhi equal zhi
+variable nAtoms equal atoms
+variable lengthx equal ${xhi}-${xlo}+2*${dx} 			       #total length along x including buffer
+change_box all x delta $(-v_xlo+v_dx) $(-v_xlo+v_dx) remap units box   #shift box so the lefthand electrode is at x=0
+change_box all x final 0 ${lengthx} units box 
+
+group oxygen type 2
+group sodium type 4
+group chloride type 5
+
+#Parameters for lj walls
+fix 1 oxygen wall/lj93 xlo v_xlo 0.891 2.861 7 units box pbc yes
+fix 2 oxygen wall/lj93 xhi v_xhi 0.891 2.861 7 units box pbc yes
+fix 3 sodium wall/lj93 xlo v_xlo 0.826 2.487 7 units box pbc yes
+fix 4 sodium wall/lj93 xhi v_xhi 0.826 2.487 7 units box pbc yes
+fix 5 chloride wall/lj93 xlo v_xlo 0.527 3.501 7 units box pbc yes
+fix 6 chloride wall/lj93 xhi v_xhi 0.527 3.501 7 units box pbc yes
+
+################
+# Minimization #
+################
+
+minimize        1.0e-6 1.0e-6 10000 1000000
+reset_timestep 0
+thermo 100
+
+#################
+# Modifications #
+#################
+
+fix constrain all shake 1.0e-4 100 0 b 1 a 1		#rigid water molecules
+velocity all create ${Text} RSEED3			#randomly sample velocities (has to be after shake fix)
+
+fix integrate all npt temp ${Text} ${Text} 100.0 iso ${Pext} ${Pext} 1000.0 couple xyz	#run npt equilibration
+fix removeMomentum all momentum 1 linear 1 1 1						#remove linear momentum
+
+##########
+# Eq. MD #
+##########
+
+dump trj_npt all custom ${Ndump} master_npt id type q x y z 	#output npt equilibration
+
+run ${Nrun}
+#write_data npt.data
+
+unfix 1
+unfix 3
+unfix 5
+
+unfix constrain
+unfix integrate
+unfix removeMomentum
+
+###########################
+# Setup for Image Charges #
+###########################
+
+variable lengthx2 equal ${xhi}-${xlo}
+
+change_box all x delta $(-v_xlo) $(-v_xlo) remap 
+change_box all x final -${lengthx2} ${lengthx2} units box 		#double box size to add image charges
+region imageR block -${lengthx2} 0 ${ylo} ${yhi} ${zlo} ${zhi}
+create_atoms 3 random ${nAtoms} RSEED4 imageR				#add image charges
+
+variable active atom x>0
+group Active variable active
+group water_ions type 1 2
+
+compute myTemp Active temp		#images have zero velocity so don't include
+thermo_modify temp myTemp		#them in temperature calculations
+
+#################
+# Modifications #
+#################
+
+timestep 0.005
+
+fix 1 oxygen wall/lj93 xlo 0 0.891 2.861 7 units box pbc yes
+fix 3 sodium wall/lj93 xlo 0 0.826 2.487 7 units box pbc yes
+fix 5 chloride wall/lj93 xlo 0 0.527 3.501 7 units box pbc yes
+
+fix constrain water_ions shake 1.0e-4 100 0 b 1 a 1
+velocity Active create ${Text} RSEED5
+
+fix integrate Active nvt temp ${Text} ${Text} 100.0
+fix removeMomentum Active momentum 1 linear 1 1 1
+
+fix constantPotential all imagecharges 0 0 0 1 0 0 3 scale 1	#add images charges
+
+thermo 1000
+
+##########
+# Run MD #
+##########
+
+dump trj_tmp all custom ${Ndump} master_tmp id type q x y z 
+run ${Nrun}
+
+timestep 0.01
+run ${Nrun}
+
+timestep 0.1
+run ${Nrun}
+
+timestep 0.2
+run ${Nrun}
+
+timestep 0.5
+run ${Nrun}
+
+timestep 1.0
+reset_timestep 0
+
+dump trj_nvt all custom ${Ndump} master_nvt id type q x y z 
+run ${Nrun}
+
+write_data images.data		#output equilibrated configuration
+
+

@@ -1,0 +1,67 @@
+# Reference: M. Orsi, Comparative assessment of the ELBA coarse-grained 
+# model for water, Molecular Physics (2014), 112, 1566-1576
+# Modified by kdwelle@mit.edu for image charge formalism The Journal of Physical Chemistry C 2019, 123, 24095–24103
+
+variable Nrun1 equal 10000	#timesteps before turning field on
+variable Nrun2 equal 10100	#first timestep after turning field on
+variable Ndump equal 100	#Ndump from in2
+
+################
+# System Setup #
+################
+
+units real
+atom_style full
+pair_style coul/long 13.0	#rerun using just coulomb interaction
+pair_modify tail no
+kspace_style pppm 1.0e-5
+
+##############
+# Read Input #
+##############
+
+read_data images.data nocoeff	#read box parameters
+read_dump INNAME 0 q x y z	#read charges (these change every time imagecharge fix is applied)
+
+##################
+# Set Parameters #
+##################
+
+pair_coeff * *
+
+variable Text equal 298.0
+
+neighbor 2.0 bin
+neigh_modify every 1 delay 0 check yes
+
+############################
+#     Compute PE terms     #
+############################
+
+variable active atom x>0
+group Active variable active
+group both_ions type 4 5
+group water type 1 2
+group images type 3
+thermo 100
+
+###########
+#  Rerun  #
+###########
+
+compute peatom Active pe/atom	#compute madelung potential
+
+#only output active box (no images)
+dump trj Active custom ${Ndump} TRAJOUT id type q x y z c_peatom fx fy fz
+
+rerun INNAME last ${Nrun1} dump x y z	#rerun doesn't do dynamics, just evaluates PE
+
+read_dump INNAME ${Nrun2} q x y z	#re-read charges
+
+group Active variable active
+group both_ions type 4 5
+group water type 1 2
+group images type 3
+
+rerun INNAME first ${Nrun2} dump x y z 
+

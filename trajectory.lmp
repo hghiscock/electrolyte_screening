@@ -1,0 +1,129 @@
+# Reference: M. Orsi, Comparative assessment of the ELBA coarse-grained 
+# model for water, Molecular Physics (2014), 112, 1566-1576
+# Modified by kdwelle@mit.edu for image charge formalism The Journal of Physical Chemistry C 2019, 123, 24095–24103
+
+variable Nrun equal 10000	#re-equilibration time after resampling momenta
+variable Ndump equal 100	#how many timesteps to output
+
+################
+# System Setup #
+################
+
+units real
+atom_style full
+pair_style lj/cut/coul/long 13.0
+pair_modify tail no
+kspace_style pppm 1.0e-5
+bond_style harmonic
+angle_style harmonic
+
+##############
+# Read Input #
+##############
+
+read_data images.data		#read in equilibrated configuration
+
+##################
+# Set Parameters #
+##################
+
+mass 1 1.00794 # H
+mass 2 15.9994 # O
+pair_coeff 1 1 0.000 0.000	
+pair_coeff 1 2 0.000 0.000	
+pair_coeff 2 2 0.102 3.188
+bond_coeff 1 450.0 0.9572
+angle_coeff 1 55.0 104.52
+mass 4 39.34 #Na
+set type 4 charge 1
+pair_coeff * 4 0.000 0.000
+pair_coeff 2 4 0.09444 2.814
+pair_coeff 4 4 0.08744 2.439
+mass 5 60.66 #Cl
+set type 5 charge -1
+pair_coeff * 5 0.000 0.000
+pair_coeff 2 5 0.06025 3.832
+pair_coeff 4 5 0.05579 3.458
+pair_coeff 5 5 0.03559 4.478
+mass 3 10.0 #images
+pair_coeff * 3 0.000 0.000
+pair_coeff 3 * 0.000 0.000
+
+variable xlo equal xlo
+variable xhi equal xhi
+variable ylo equal ylo
+variable yhi equal yhi
+variable zlo equal zlo
+variable zhi equal zhi
+
+variable Text equal 298.0
+
+neighbor 2.0 bin
+neigh_modify every 1 delay 0 check yes
+
+###########################
+# Setup for Image Charges #
+###########################
+
+variable active atom x>0
+group Active variable active
+group both_ions type 4 5
+group water_ions type 1 2
+region active_box block 0 ${xhi} ${ylo} ${yhi} ${zlo} ${zhi} 
+group oxygen type 2
+group sodium type 4
+group chloride type 5
+
+compute myTemp Active temp
+thermo_modify temp myTemp
+
+#################
+# Modifications #
+#################
+
+fix 1 oxygen wall/lj93 xlo 0 0.891 2.861 7 units box pbc yes
+fix 2 oxygen wall/lj93 xhi ${xhi} 0.891 2.861 7 units box pbc yes
+fix 3 sodium wall/lj93 xlo 0 0.826 2.487 7 units box pbc yes
+fix 4 sodium wall/lj93 xhi ${xhi} 0.826 2.487 7 units box pbc yes
+fix 5 chloride wall/lj93 xlo 0 0.527 3.501 7 units box pbc yes
+fix 6 chloride wall/lj93 xhi ${xhi} 0.527 3.501 7 units box pbc yes
+
+fix constrain water_ions shake 1.0e-4 100 0 b 1 a 1
+velocity Active create ${Text} RSEED1				#resample momenta
+
+fix integrate Active nvt temp ${Text} ${Text} 100.0
+fix removeMomentum Active momentum 1 linear 1 1 1
+
+fix constantPotential all imagecharges 0 0 0 1 0 0 3 scale 1
+
+thermo 1000
+
+##########
+# Run MD #
+##########
+
+timestep 1.0
+reset_timestep 0
+
+compute peatom Active pe/atom
+
+#output trajectory
+dump trj all custom ${Ndump} TRAJOUT id type q x y z xu yu zu c_peatom
+
+run ${Nrun}							#run equilibration ater resampling momenta
+
+#have to unfix things that change when a force is added
+unfix constrain
+unfix constantPotential
+unfix integrate
+unfix removeMomentum
+
+fix field_on Active efield VVAL 0 0				#add electric field
+
+#refix
+fix constrain_again water_ions shake 1.0e-4 100 0 b 1 a 1
+fix integrate_again Active nvt temp ${Text} ${Text} 100.0
+fix removeMomentum_again Active momentum 1 linear 1 1 1
+fix constantPotential_again all imagecharges 0 0 0 1 0 0 3 scale 1
+
+run $(v_Nrun*3)							#run relaxation
